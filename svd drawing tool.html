@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Interactive SVG Drawing Tool</title>
+  <style>
+    :root{
+      --bg:#f6f7f9; --panel:#ffffff; --ink:#1e90ff; --ink2:#111827; --border:#d1d5db;
+    }
+    *{box-sizing:border-box}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial; background:var(--bg); margin:0; color:#111827}
+    header{padding:16px 20px; font-weight:700; font-size:22px;}
+    .app{max-width:1000px; margin:18px auto; padding:0 16px}
+    .toolbar{display:flex; flex-wrap:wrap; gap:10px; align-items:center; background:var(--panel); border:1px solid var(--border); padding:10px 12px; border-radius:12px; box-shadow:0 1px 2px rgba(0,0,0,.04)}
+    .btn{appearance:none; border:1px solid var(--border); background:#fff; padding:8px 10px; border-radius:10px; cursor:pointer; font-weight:600}
+    .btn.active{border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,.15)}
+    .btn:focus{outline:none; box-shadow:0 0 0 3px rgba(37,99,235,.25)}
+    .sep{width:1px; align-self:stretch; background:var(--border); margin:0 4px}
+    label{font-size:14px; display:flex; align-items:center; gap:6px}
+    input[type="number"]{width:72px}
+    .board{margin-top:14px; background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:12px}
+    svg{width:100%; height:520px; background:#fafafa; border:1px dashed #9ca3af; border-radius:10px; display:block; touch-action:none}
+    footer{opacity:.7; padding:10px; font-size:12px}
+  </style>
+</head>
+<body>
+  <header>SVG Drawing Tool</header>
+  <div class="app">
+    <div class="toolbar" role="toolbar" aria-label="Drawing controls">
+      <button class="btn active" data-tool="free" title="Freehand (Path)">Freehand</button>
+      <button class="btn" data-tool="line" title="Line">Line</button>
+      <button class="btn" data-tool="rect" title="Rectangle">Rect</button>
+      <button class="btn" data-tool="ellipse" title="Ellipse">Ellipse</button>
+      <div class="sep"></div>
+      <label>Stroke <input type="color" id="stroke" value="#1e90ff"></label>
+      <label>Width <input type="number" id="width" min="1" max="40" value="3"></label>
+      <label>Fill <input type="color" id="fill" value="#00000000" title="Pick a fill or leave transparent"></label>
+      <div class="sep"></div>
+      <button class="btn" id="undo" title="Undo last shape (Ctrl+Z)">Undo</button>
+      <button class="btn" id="clear" title="Clear all">Clear</button>
+      <span style="margin-left:auto;font-size:12px;opacity:.7">Tip: hold <kbd>Shift</kbd> to constrain line/rect.</span>
+    </div>
+
+    <div class="board">
+      <svg id="stage" viewBox="0 0 1000 520" xmlns="http://www.w3.org/2000/svg" aria-label="Drawing canvas">
+        <!-- drawn shapes will be appended here -->
+      </svg>
+      <footer>Click and drag to draw. Release to finish. Repeat to add more shapes.</footer>
+    </div>
+  </div>
+
+  <script>
+    const svg = document.getElementById('stage');
+    const toolButtons = Array.from(document.querySelectorAll('.btn[data-tool]'));
+    const strokeInput = document.getElementById('stroke');
+    const widthInput = document.getElementById('width');
+    const fillInput = document.getElementById('fill');
+    const undoBtn = document.getElementById('undo');
+    const clearBtn = document.getElementById('clear');
+
+    let currentTool = 'free';
+    let drawing = false;
+    let start = null; // {x,y}
+    let element = null; // currently drawn SVG element
+    let pathData = '';
+
+    toolButtons.forEach(btn => btn.addEventListener('click', () => {
+      toolButtons.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentTool = btn.dataset.tool;
+    }));
+
+    // Utilities
+    function svgPoint(evt){
+      const pt = svg.createSVGPoint();
+      pt.x = evt.clientX; pt.y = evt.clientY;
+      const screenCTM = svg.getScreenCTM();
+      return pt.matrixTransform(screenCTM.inverse());
+    }
+
+    function setCommonStyling(el){
+      el.setAttribute('stroke', strokeInput.value);
+      el.setAttribute('stroke-width', widthInput.value);
+      el.setAttribute('stroke-linecap', 'round');
+      el.setAttribute('stroke-linejoin', 'round');
+      if (currentTool === 'rect' || currentTool === 'ellipse') {
+        const fill = fillInput.value;
+        el.setAttribute('fill', fill && fill !== '#00000000' ? fill : 'transparent');
+      } else {
+        el.setAttribute('fill', 'none');
+      }
+    }
+
+    // Pointer handlers
+    svg.addEventListener('pointerdown', (evt) => {
+      if (evt.button !== 0) return; // left only
+      svg.setPointerCapture(evt.pointerId);
+      drawing = true;
+      const {x, y} = svgPoint(evt);
+      start = {x, y};
+
+      switch(currentTool){
+        case 'line':
+          element = document.createElementNS('http://www.w3.org/2000/svg','line');
+          element.setAttribute('x1', x); element.setAttribute('y1', y);
+          element.setAttribute('x2', x); element.setAttribute('y2', y);
+          break;
+        case 'rect':
+          element = document.createElementNS('http://www.w3.org/2000/svg','rect');
+          element.setAttribute('x', x); element.setAttribute('y', y);
+          element.setAttribute('width', 0); element.setAttribute('height', 0);
+          break;
+        case 'ellipse':
+          element = document.createElementNS('http://www.w3.org/2000/svg','ellipse');
+          element.setAttribute('cx', x); element.setAttribute('cy', y);
+          element.setAttribute('rx', 0); element.setAttribute('ry', 0);
+          break;
+        default: // freehand path
+          element = document.createElementNS('http://www.w3.org/2000/svg','path');
+          pathData = `M ${x} ${y}`;
+          element.setAttribute('d', pathData);
+      }
+
+      setCommonStyling(element);
+      svg.appendChild(element);
+      evt.preventDefault();
+    });
+
+    svg.addEventListener('pointermove', (evt) => {
+      if (!drawing || !element) return;
+      const p = svgPoint(evt);
+
+      if (currentTool === 'line'){
+        if (evt.shiftKey) { // constrain to 0/45/90 deg
+          const dx = p.x - start.x, dy = p.y - start.y;
+          const angle = Math.atan2(dy, dx);
+          const snapped = Math.round(angle / (Math.PI/4)) * (Math.PI/4);
+          const len = Math.hypot(dx, dy);
+          p.x = start.x + Math.cos(snapped) * len;
+          p.y = start.y + Math.sin(snapped) * len;
+        }
+        element.setAttribute('x2', p.x);
+        element.setAttribute('y2', p.y);
+      }
+      else if (currentTool === 'rect'){
+        let x = Math.min(p.x, start.x);
+        let y = Math.min(p.y, start.y);
+        let w = Math.abs(p.x - start.x);
+        let h = Math.abs(p.y - start.y);
+        if (evt.shiftKey) { const s = Math.max(w,h); w=h=s; x = start.x < p.x ? start.x : start.x - s; y = start.y < p.y ? start.y : start.y - s; }
+        element.setAttribute('x', x); element.setAttribute('y', y);
+        element.setAttribute('width', w); element.setAttribute('height', h);
+      }
+      else if (currentTool === 'ellipse'){
+        element.setAttribute('rx', Math.abs(p.x - start.x));
+        element.setAttribute('ry', Math.abs(p.y - start.y));
+        element.setAttribute('cx', (start.x));
+        element.setAttribute('cy', (start.y));
+      }
+      else { // freehand path
+        pathData += ` L ${p.x} ${p.y}`;
+        element.setAttribute('d', pathData);
+      }
+    });
+
+    function finishDrawing(){
+      drawing = false; start = null; element = null; pathData = '';
+    }
+
+    svg.addEventListener('pointerup', finishDrawing);
+    svg.addEventListener('pointerleave', finishDrawing);
+
+    // Undo / Clear
+    undoBtn.addEventListener('click', () => {
+      const last = svg.lastElementChild;
+      if (last) svg.removeChild(last);
+    });
+    clearBtn.addEventListener('click', () => { svg.innerHTML = ''; });
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault(); undoBtn.click();
+      }
+    });
+  </script>
+</body>
+</html>
